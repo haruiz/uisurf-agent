@@ -190,6 +190,7 @@ def start_a2a_server(host: str | None = None, port: int | None = None) -> None:
 
     host = host or os.environ.get("AGENT_HOST", "localhost")
     port = port or int(os.environ.get("DESKTOP_AGENT_PORT", "8002"))
+    public_url = os.environ.get("DESKTOP_AGENT_PUBLIC_URL", f"http://{host}:{port}/")
     capabilities = AgentCapabilities(streaming=True, push_notifications=True)
     skill = AgentSkill(
         id="desktop_operator",
@@ -208,7 +209,7 @@ def start_a2a_server(host: str | None = None, port: int | None = None) -> None:
     agent_card = AgentCard(
         name="DesktopOperatorAgent",
         description="A desktop automation and screenshot observation agent powered by Gemini computer use.",
-        url=f"http://{host}:{port}/",
+        url=public_url,
         version="1.0.0",
         default_input_modes=["text"],
         default_output_modes=["text"],

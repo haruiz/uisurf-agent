@@ -8,6 +8,8 @@ PASSWORD_REQUIRED="${PASSWORD_REQUIRED:-true}"
 export AGENT_HOST="${AGENT_HOST:-0.0.0.0}"
 export BROWSER_AGENT_PORT="${BROWSER_AGENT_PORT:-8001}"
 export DESKTOP_AGENT_PORT="${DESKTOP_AGENT_PORT:-8002}"
+export BROWSER_AGENT_PUBLIC_URL="${BROWSER_AGENT_PUBLIC_URL:-http://localhost:6080/browser/}"
+export DESKTOP_AGENT_PUBLIC_URL="${DESKTOP_AGENT_PUBLIC_URL:-http://localhost:6080/desktop/}"
 
 echo "Preparing environment..."
 
@@ -20,6 +22,7 @@ mkdir -p /root/.vnc
 mkdir -p /run/dbus
 mkdir -p /tmp/.X11-unix
 mkdir -p /tmp/chrome-profile
+mkdir -p /var/log/nginx
 
 # -----------------------------
 # Configure VNC auth
@@ -75,7 +78,7 @@ echo "Starting noVNC..."
 
 websockify \
     --web /usr/share/novnc/ \
-    6080 \
+    6081 \
     localhost:5901 \
     > /tmp/novnc.log 2>&1 &
 
@@ -122,6 +125,113 @@ uv run uisurf_agent run desktop_agent \
     > /tmp/desktop-agent.log 2>&1 &
 
 # -----------------------------
+# Start reverse proxy
+# -----------------------------
+echo "Starting reverse proxy..."
+
+cat >/etc/nginx/nginx.conf <<EOF
+worker_processes 1;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    map \$http_upgrade \$connection_upgrade {
+        default upgrade;
+        '' close;
+    }
+
+    map \$request_method \$browser_entry_upstream {
+        default http://127.0.0.1:${BROWSER_AGENT_PORT}/;
+        GET http://127.0.0.1:${BROWSER_AGENT_PORT}/.well-known/agent-card.json;
+    }
+
+    map \$request_method \$desktop_entry_upstream {
+        default http://127.0.0.1:${DESKTOP_AGENT_PORT}/;
+        GET http://127.0.0.1:${DESKTOP_AGENT_PORT}/.well-known/agent-card.json;
+    }
+
+    server {
+        listen 6080;
+        server_name _;
+
+        location = / {
+            return 302 /vnc.html;
+        }
+
+        location = /browser {
+            proxy_pass \$browser_entry_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+        }
+
+        location = /desktop {
+            proxy_pass \$desktop_entry_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+        }
+
+        location = /browser/ {
+            proxy_pass \$browser_entry_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+        }
+
+        location = /desktop/ {
+            proxy_pass \$desktop_entry_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+        }
+
+        location /browser/ {
+            rewrite ^/browser/?(.*)$ /\$1 break;
+            proxy_pass http://127.0.0.1:${BROWSER_AGENT_PORT};
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+        }
+
+        location /desktop/ {
+            rewrite ^/desktop/?(.*)$ /\$1 break;
+            proxy_pass http://127.0.0.1:${DESKTOP_AGENT_PORT};
+            proxy_http_version 1.1;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+        }
+
+        location /websockify {
+            proxy_pass http://127.0.0.1:6081;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection \$connection_upgrade;
+            proxy_set_header Host \$host;
+        }
+
+        location / {
+            proxy_pass http://127.0.0.1:6081;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection \$connection_upgrade;
+            proxy_set_header Host \$host;
+        }
+    }
+}
+EOF
+
+nginx -g 'daemon off;' > /tmp/nginx.log 2>&1 &
+
+# -----------------------------
 # Display info
 # -----------------------------
 echo ""
@@ -131,14 +241,14 @@ echo ""
 echo "noVNC UI:"
 echo "http://localhost:6080/vnc.html"
 echo ""
-echo "Chrome DevTools:"
-echo "http://localhost:9222/json/version"
-echo ""
 echo "Browser A2A server:"
-echo "http://localhost:${BROWSER_AGENT_PORT}"
+echo "http://localhost:6080/browser"
 echo ""
 echo "Desktop A2A server:"
-echo "http://localhost:${DESKTOP_AGENT_PORT}"
+echo "http://localhost:6080/desktop"
+echo ""
+echo "Chrome DevTools:"
+echo "http://localhost:9222/json/version"
 echo "===================================="
 echo ""
 
@@ -147,6 +257,7 @@ echo ""
 # -----------------------------
 tail -f \
     /tmp/chromium.log \
+    /tmp/nginx.log \
     /tmp/novnc.log \
     /tmp/browser-agent.log \
     /tmp/desktop-agent.log

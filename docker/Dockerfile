@@ -8,6 +8,7 @@ ENV PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y \
     curl \
     chromium \
+    nginx \
     xfce4 \
     xfce4-terminal \
     xfce4-goodies \
@@ -38,8 +39,6 @@ RUN uv run playwright install --with-deps chromium
 RUN chmod +x /app/start.sh /app/start_browser.sh /app/xstartup
 
 EXPOSE 6080
-EXPOSE 8001
-EXPOSE 8002
 EXPOSE 9222
 
 CMD ["/app/start.sh"]

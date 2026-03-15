@@ -4,26 +4,27 @@ set -Eeuo pipefail
 IMAGE_NAME="${IMAGE_NAME:-uisurf-agent:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-uisurf-agent-test}"
 PORT="${PORT:-6080}"
-BROWSER_A2A_PORT="${BROWSER_A2A_PORT:-8001}"
-DESKTOP_A2A_PORT="${DESKTOP_A2A_PORT:-8002}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-.}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-./docker/Dockerfile}"
 ENV_FILE="${ENV_FILE:-.env}"
 SHM_SIZE="${SHM_SIZE:-2g}"
 CONTAINER_PORT="${CONTAINER_PORT:-6080}"
-BROWSER_A2A_CONTAINER_PORT="${BROWSER_A2A_CONTAINER_PORT:-8001}"
-DESKTOP_A2A_CONTAINER_PORT="${DESKTOP_A2A_CONTAINER_PORT:-8002}"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://${HOSTNAME_OVERRIDE:-localhost}:${PORT}}"
+BROWSER_AGENT_PUBLIC_URL="${BROWSER_AGENT_PUBLIC_URL:-${PUBLIC_BASE_URL}/browser/}"
+DESKTOP_AGENT_PUBLIC_URL="${DESKTOP_AGENT_PUBLIC_URL:-${PUBLIC_BASE_URL}/desktop/}"
 
 DOCKER_ENV_ARGS=()
+if [[ -f "${ENV_FILE}" ]]; then
+  DOCKER_ENV_ARGS+=(--env-file "${ENV_FILE}")
+fi
 if [[ -n "${GEMINI_API_KEY:-}" ]]; then
   DOCKER_ENV_ARGS+=(-e "GEMINI_API_KEY=${GEMINI_API_KEY}")
 fi
 if [[ -n "${GOOGLE_API_KEY:-}" ]]; then
   DOCKER_ENV_ARGS+=(-e "GOOGLE_API_KEY=${GOOGLE_API_KEY}")
 fi
-if [[ -f "${ENV_FILE}" ]]; then
-  DOCKER_ENV_ARGS+=(--env-file "${ENV_FILE}")
-fi
+DOCKER_ENV_ARGS+=(-e "BROWSER_AGENT_PUBLIC_URL=${BROWSER_AGENT_PUBLIC_URL}")
+DOCKER_ENV_ARGS+=(-e "DESKTOP_AGENT_PUBLIC_URL=${DESKTOP_AGENT_PUBLIC_URL}")
 
 log() {
   printf '\n[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -82,8 +83,8 @@ show_access_info() {
   echo "Container name : ${CONTAINER_NAME}"
   echo "Image          : ${IMAGE_NAME}"
   echo "noVNC URL      : http://${host}:${PORT}"
-  echo "Browser A2A URL: http://${host}:${BROWSER_A2A_PORT}"
-  echo "Desktop A2A URL: http://${host}:${DESKTOP_A2A_PORT}"
+  echo "Browser A2A URL: http://${host}:${PORT}/browser"
+  echo "Desktop A2A URL: http://${host}:${PORT}/desktop"
   echo
   echo "To view logs:"
   echo "  docker logs -f ${CONTAINER_NAME}"
@@ -101,6 +102,9 @@ main() {
 
   cleanup_existing_container
 
+  log "Advertised browser URL: ${BROWSER_AGENT_PUBLIC_URL}"
+  log "Advertised desktop URL: ${DESKTOP_AGENT_PUBLIC_URL}"
+
   log "Starting container: ${CONTAINER_NAME}"
   docker run -d \
     --name "${CONTAINER_NAME}" \
@@ -110,8 +114,6 @@ main() {
     --cap-add=SYS_ADMIN \
     "${DOCKER_ENV_ARGS[@]}" \
     -p "${PORT}:${CONTAINER_PORT}" \
-    -p "${BROWSER_A2A_PORT}:${BROWSER_A2A_CONTAINER_PORT}" \
-    -p "${DESKTOP_A2A_PORT}:${DESKTOP_A2A_CONTAINER_PORT}" \
     "${IMAGE_NAME}" >/dev/null
 
   wait_for_container
