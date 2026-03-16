@@ -4,7 +4,7 @@ set -euo pipefail
 export DISPLAY=:1
 export USER=root
 export HOME=/root
-PASSWORD_REQUIRED="${PASSWORD_REQUIRED:-true}"
+PASSWORD_REQUIRED="${PASSWORD_REQUIRED:-false}"
 export AGENT_HOST="${AGENT_HOST:-0.0.0.0}"
 export BROWSER_AGENT_PORT="${BROWSER_AGENT_PORT:-8001}"
 export DESKTOP_AGENT_PORT="${DESKTOP_AGENT_PORT:-8002}"
@@ -157,12 +157,20 @@ http {
         server_name _;
 
         location = / {
-            return 302 /vnc.html;
+            return 302 /vnc.html?autoconnect=1&resize=remote&path=websockify;
+        }
+
+        location = /vnc.html {
+            return 302 /vnc.html?autoconnect=1&resize=remote&path=websockify;
         }
 
         location = /browser {
             proxy_pass \$browser_entry_upstream;
             proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
             proxy_set_header Host \$host;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto \$scheme;
@@ -171,6 +179,10 @@ http {
         location = /desktop {
             proxy_pass \$desktop_entry_upstream;
             proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
             proxy_set_header Host \$host;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto \$scheme;
@@ -179,6 +191,10 @@ http {
         location = /browser/ {
             proxy_pass \$browser_entry_upstream;
             proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
             proxy_set_header Host \$host;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto \$scheme;
@@ -187,6 +203,10 @@ http {
         location = /desktop/ {
             proxy_pass \$desktop_entry_upstream;
             proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
             proxy_set_header Host \$host;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto \$scheme;
@@ -196,6 +216,10 @@ http {
             rewrite ^/browser/?(.*)$ /\$1 break;
             proxy_pass http://127.0.0.1:${BROWSER_AGENT_PORT};
             proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
             proxy_set_header Host \$host;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto \$scheme;
@@ -205,6 +229,10 @@ http {
             rewrite ^/desktop/?(.*)$ /\$1 break;
             proxy_pass http://127.0.0.1:${DESKTOP_AGENT_PORT};
             proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
             proxy_set_header Host \$host;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto \$scheme;

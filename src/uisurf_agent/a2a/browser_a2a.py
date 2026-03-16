@@ -63,7 +63,7 @@ class BrowserAgentExecutor(AgentExecutor):
         browser agent may need per-request readiness even when the instance is reused.
         """
         if self.agent is None:
-            self.agent = BrowserAgent()
+            self.agent = BrowserAgent(auto_confirm=True)
         await self.agent.initialize()
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:

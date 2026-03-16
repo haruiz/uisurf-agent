@@ -143,7 +143,7 @@ MODEL_ID=gemini-3-flash-preview
 AGENT_HOST=0.0.0.0
 BROWSER_AGENT_PORT=8001
 DESKTOP_AGENT_PORT=8002
-PASSWORD_REQUIRED=true
+PASSWORD_REQUIRED=false
 ```
 
 You can also point the wrapper at a different file:
@@ -165,8 +165,8 @@ The script builds the image from [docker/Dockerfile](/Users/haruiz/open-source/u
 Default host endpoints:
 
 - noVNC: `http://localhost:6080`
-- browser A2A server: `http://localhost:8001`
-- desktop A2A server: `http://localhost:8002`
+- browser A2A server: `http://localhost:6080/browser/`
+- desktop A2A server: `http://localhost:6080/desktop/`
 
 ### Override published ports
 
@@ -194,6 +194,7 @@ docker rm -f uisurf-agent-test
 ### Notes
 
 - The container startup will fail early if neither `GEMINI_API_KEY` nor `GOOGLE_API_KEY` is provided.
+- VNC password auth is disabled by default. Set `PASSWORD_REQUIRED=true` if you want the frontend to require a VNC password again.
 - Inside the container, Chromium is started separately and the browser controller connects to it over CDP at `http://127.0.0.1:9222`.
 - The desktop and browser agents are both started through the package CLI from [src/uisurf_agent/cli.py](/Users/haruiz/open-source/uisurf-agent/src/uisurf_agent/cli.py).
 

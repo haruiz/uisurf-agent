@@ -28,3 +28,8 @@ uisurf_agent = "uisurf_agent.cli:app"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "litellm>=1.82.2",
+]
