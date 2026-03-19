@@ -160,10 +160,6 @@ http {
             return 302 /vnc.html?autoconnect=1&resize=remote&path=websockify;
         }
 
-        location = /vnc.html {
-            return 302 /vnc.html?autoconnect=1&resize=remote&path=websockify;
-        }
-
         location = /browser {
             proxy_pass \$browser_entry_upstream;
             proxy_http_version 1.1;
