@@ -252,6 +252,10 @@ class DesktopAgent(UIAgent):
         auto_confirm: bool = False,
         screen_width: int | None = None,
         screen_height: int | None = None,
+        observation_delay_ms: int = 1500,
+        include_thoughts: bool = True,
+        max_observation_images: int = 2,
+        observation_scale: float = 1.0,
         client: genai.Client | None = None,
     ) -> None:
         """Create a desktop agent and its backing controller.
@@ -261,12 +265,26 @@ class DesktopAgent(UIAgent):
                 automatically.
             screen_width: Optional fixed desktop width override.
             screen_height: Optional fixed desktop height override.
+            observation_delay_ms: Delay before each desktop screenshot capture.
+            include_thoughts: Whether model thought streaming should be enabled
+                when supported by the selected model.
+            max_observation_images: Maximum number of screenshot-bearing
+                observations to keep with image payloads in model history.
+            observation_scale: Scale factor applied to screenshots before they
+                are sent to the model. Coordinates still use the full desktop.
             client: Optional preconfigured GenAI client instance.
         """
-        super().__init__(auto_confirm=auto_confirm, client=client)
+        super().__init__(
+            auto_confirm=auto_confirm,
+            client=client,
+            max_observation_images=max_observation_images,
+        )
+        self._include_thoughts = include_thoughts
         self._desktop_controller = DesktopController(
             screen_width=screen_width,
             screen_height=screen_height,
+            observation_delay_ms=observation_delay_ms,
+            observation_scale=observation_scale,
         )
         self._client_config = self._build_client_config()
 
@@ -301,7 +319,7 @@ class DesktopAgent(UIAgent):
         }
 
         model_parts = MODEL_ID.split("-")
-        if len(model_parts) > 1:
+        if self._include_thoughts and len(model_parts) > 1:
             try:
                 if float(model_parts[1]) >= 3:
                     config_kwargs["thinking_config"] = ThinkingConfig(

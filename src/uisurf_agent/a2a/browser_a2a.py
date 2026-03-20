@@ -33,6 +33,8 @@ from a2a.utils import (
 from dotenv import load_dotenv
 
 from uisurf_agent.agents import BrowserAgent
+from uisurf_agent.utils.config_utils import resolve_bool_config, resolve_int_config
+from uisurf_agent.utils.screenshot_utils import resolve_observation_scale
 
 
 logging.basicConfig(level=logging.INFO)
@@ -51,9 +53,19 @@ class BrowserAgentExecutor(AgentExecutor):
     across requests.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        observation_scale: float = 1.0,
+        fast_mode: bool = False,
+        include_thoughts: bool = True,
+        max_observation_images: int = 2,
+    ) -> None:
         """Create executor state with deferred agent construction."""
         self.agent: BrowserAgent | None = None
+        self._observation_scale = observation_scale
+        self._fast_mode = fast_mode
+        self._include_thoughts = include_thoughts
+        self._max_observation_images = max_observation_images
 
     async def _ensure_initialized(self) -> None:
         """Create and initialize the browser agent if it is not ready.
@@ -63,7 +75,13 @@ class BrowserAgentExecutor(AgentExecutor):
         browser agent may need per-request readiness even when the instance is reused.
         """
         if self.agent is None:
-            self.agent = BrowserAgent(auto_confirm=True)
+            self.agent = BrowserAgent(
+                auto_confirm=True,
+                fast_mode=self._fast_mode,
+                include_thoughts=self._include_thoughts,
+                max_observation_images=self._max_observation_images,
+                observation_scale=self._observation_scale,
+            )
         await self.agent.initialize()
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -139,12 +157,26 @@ class BrowserAgentExecutor(AgentExecutor):
         return
 
 
-def start_a2a_server(host: str | None = None, port: int | None = None) -> None:
+def start_a2a_server(
+    host: str | None = None,
+    port: int | None = None,
+    fast_mode: bool | None = None,
+    include_thoughts: bool | None = None,
+    max_observation_images: int | None = None,
+    observation_scale: float | None = None,
+) -> None:
     """Configure and start the browser-agent A2A HTTP server.
 
     Environment:
         ``AGENT_HOST``: Default host interface to bind. Defaults to ``localhost``.
         ``BROWSER_AGENT_PORT``: Default HTTP port for this server. Defaults to ``8001``.
+        ``BROWSER_FAST_MODE``: Optional flag that speeds up browser settling.
+        ``BROWSER_INCLUDE_THOUGHTS``: Browser-only override for model thought
+        streaming. Falls back to ``INCLUDE_THOUGHTS``.
+        ``MAX_OBSERVATION_IMAGES``: Maximum number of screenshot observations to
+        keep with image payloads in model history.
+        ``BROWSER_OBSERVATION_SCALE``: Optional screenshot scale override for the
+        browser agent. Falls back to ``OBSERVATION_SCALE`` or ``1.0``.
 
     Args:
         host: Optional host override. When omitted, ``AGENT_HOST`` is used.
@@ -161,6 +193,26 @@ def start_a2a_server(host: str | None = None, port: int | None = None) -> None:
 
     host = host or os.environ.get("AGENT_HOST", "localhost")
     port = port or int(os.environ.get("BROWSER_AGENT_PORT", "8001"))
+    resolved_fast_mode = resolve_bool_config(
+        fast_mode,
+        "BROWSER_FAST_MODE",
+        default=False,
+    )
+    resolved_include_thoughts = resolve_bool_config(
+        include_thoughts,
+        "BROWSER_INCLUDE_THOUGHTS",
+        default=resolve_bool_config(None, "INCLUDE_THOUGHTS", default=True),
+    )
+    resolved_max_observation_images = resolve_int_config(
+        max_observation_images,
+        "MAX_OBSERVATION_IMAGES",
+        default=2,
+        minimum=1,
+    )
+    resolved_observation_scale = resolve_observation_scale(
+        observation_scale,
+        "BROWSER_OBSERVATION_SCALE",
+    )
     public_url = os.environ.get("BROWSER_AGENT_PUBLIC_URL", f"http://{host}:{port}/")
     capabilities = AgentCapabilities(streaming=True, push_notifications=True)
     skill = AgentSkill(
@@ -189,7 +241,12 @@ def start_a2a_server(host: str | None = None, port: int | None = None) -> None:
     )
 
     request_handler = DefaultRequestHandler(
-        agent_executor=BrowserAgentExecutor(),
+        agent_executor=BrowserAgentExecutor(
+            fast_mode=resolved_fast_mode,
+            include_thoughts=resolved_include_thoughts,
+            max_observation_images=resolved_max_observation_images,
+            observation_scale=resolved_observation_scale,
+        ),
         task_store=InMemoryTaskStore(),
     )
 

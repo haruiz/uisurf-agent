@@ -43,6 +43,18 @@ Common variables:
 - `AGENT_HOST`: default bind host for A2A servers
 - `BROWSER_AGENT_PORT`: default browser A2A port, default `8001`
 - `DESKTOP_AGENT_PORT`: default desktop A2A port, default `8002`
+- `BROWSER_FAST_MODE`: speeds up browser settling by waiting less aggressively
+- `INCLUDE_THOUGHTS`: global default for model thought streaming when supported
+- `BROWSER_INCLUDE_THOUGHTS`: browser-only override for thought streaming
+- `DESKTOP_INCLUDE_THOUGHTS`: desktop-only override for thought streaming
+- `DESKTOP_OBSERVATION_DELAY_MS`: delay before each desktop screenshot capture
+- `MAX_OBSERVATION_IMAGES`: number of screenshot observations that keep image payloads in history
+- `OBSERVATION_SCALE`: default screenshot scale for both agents, from `0 < scale <= 1`
+- `BROWSER_OBSERVATION_SCALE`: browser-only screenshot scale override
+- `DESKTOP_OBSERVATION_SCALE`: desktop-only screenshot scale override
+
+Screenshot scaling only changes the image sent to the model. Action coordinates
+still map to the full browser viewport or desktop resolution.
 
 You will also need the credentials required by the Google client used by the agents.
 
@@ -65,6 +77,10 @@ uv run uisurf_agent run --help
 ```bash
 uv run uisurf_agent run browser_agent \
   --task "Open example.com and summarize the page" \
+  --fast-mode \
+  --no-include-thoughts \
+  --max-observation-images 2 \
+  --observation-scale 0.75 \
   --max-steps 20
 ```
 
@@ -81,6 +97,10 @@ uv run uisurf_agent run browser_agent \
 ```bash
 uv run uisurf_agent run desktop_agent \
   --task "Open Terminal and run pwd" \
+  --desktop-observation-delay-ms 750 \
+  --no-include-thoughts \
+  --max-observation-images 2 \
+  --observation-scale 0.75 \
   --max-steps 10
 ```
 
@@ -143,6 +163,11 @@ MODEL_ID=gemini-3-flash-preview
 AGENT_HOST=0.0.0.0
 BROWSER_AGENT_PORT=8001
 DESKTOP_AGENT_PORT=8002
+BROWSER_FAST_MODE=true
+INCLUDE_THOUGHTS=false
+DESKTOP_OBSERVATION_DELAY_MS=750
+MAX_OBSERVATION_IMAGES=2
+OBSERVATION_SCALE=0.75
 PASSWORD_REQUIRED=false
 ```
 

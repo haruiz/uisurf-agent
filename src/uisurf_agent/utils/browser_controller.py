@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
 from .animation_utils import AnimationUtilsPlaywright
+from .screenshot_utils import resize_png_bytes, validate_observation_scale
 
 
 @dataclass
@@ -130,6 +131,7 @@ class BrowserController:
         sleep_after_action: Union[int, float] = 0.1,
         channel: str = "chrome",
         fast_mode: bool = False,
+        observation_scale: float = 1.0,
     ) -> None:
         """Configure the browser controller and preload page helper assets.
 
@@ -147,6 +149,8 @@ class BrowserController:
             channel: Browser channel passed to Playwright when launching Chromium.
             fast_mode: Whether page stabilization should favor speed over
                 completeness.
+            observation_scale: Scale factor applied to screenshots before they
+                are sent to the model. Coordinates still map to the full viewport.
         """
         self.animate_actions = animate_actions
         self.downloads_folder = downloads_folder
@@ -157,6 +161,7 @@ class BrowserController:
         self._headless = headless
         self._sleep_after_action = sleep_after_action
         self.fast_mode = fast_mode
+        self._observation_scale = validate_observation_scale(observation_scale)
         self._cdp_url = self.DEFAULT_CDP_URL
         self._connected_over_cdp = False
         self._owns_context = False
@@ -319,7 +324,8 @@ class BrowserController:
         """
         if not self.page: raise RuntimeError("No page active.")
         await self.wait_until_loaded()
-        return await self.page.screenshot(full_page=full_page, type="png")
+        screenshot = await self.page.screenshot(full_page=full_page, type="png")
+        return resize_png_bytes(screenshot, self._observation_scale)
 
     async def wait_until_loaded(self, timeout_ms: int = 15000) -> None:
         """Wait until the active page is loaded and visually stable.

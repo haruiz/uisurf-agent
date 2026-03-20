@@ -13,6 +13,8 @@ from uisurf_agent.a2a.browser_a2a import start_a2a_server as start_browser_a2a_s
 from uisurf_agent.a2a.desktop_a2a import start_a2a_server as start_desktop_a2a_server
 from uisurf_agent.agents import BrowserAgent, DesktopAgent
 from uisurf_agent.agents.ui_agent import SafetyPromptDecision
+from uisurf_agent.utils.config_utils import resolve_bool_config, resolve_int_config
+from uisurf_agent.utils.screenshot_utils import resolve_observation_scale
 
 
 logger = logging.getLogger("uisurf_agent.cli")
@@ -76,11 +78,19 @@ async def _run_browser_agent_interactive(
     max_steps: int,
     headless: bool,
     auto_confirm: bool,
+    fast_mode: bool,
+    include_thoughts: bool,
+    max_observation_images: int,
+    observation_scale: float,
 ) -> None:
     """Run the browser agent locally and print streamed events."""
     async with BrowserAgent(
         auto_confirm=auto_confirm,
         headless=headless,
+        fast_mode=fast_mode,
+        include_thoughts=include_thoughts,
+        max_observation_images=max_observation_images,
+        observation_scale=observation_scale,
     ) as agent:
         async for event in agent.run(
             task,
@@ -94,9 +104,19 @@ async def _run_desktop_agent_interactive(
     task: str,
     max_steps: int,
     auto_confirm: bool,
+    observation_delay_ms: int,
+    include_thoughts: bool,
+    max_observation_images: int,
+    observation_scale: float,
 ) -> None:
     """Run the desktop agent locally and print streamed events."""
-    async with DesktopAgent(auto_confirm=auto_confirm) as agent:
+    async with DesktopAgent(
+        auto_confirm=auto_confirm,
+        observation_delay_ms=observation_delay_ms,
+        include_thoughts=include_thoughts,
+        max_observation_images=max_observation_images,
+        observation_scale=observation_scale,
+    ) as agent:
         async for event in agent.run(
             task,
             max_steps=max_steps,
@@ -105,13 +125,103 @@ async def _run_desktop_agent_interactive(
             logger.info("%s: %s", event.eventType, event.payload)
 
 
-def _run_a2a_server(agent: AgentName, host: str, port: int | None) -> None:
+def _resolve_cli_observation_scale(
+    agent: AgentName,
+    observation_scale: float | None,
+) -> float:
+    """Resolve screenshot scale for the selected CLI agent."""
+    env_var = (
+        "BROWSER_OBSERVATION_SCALE"
+        if agent is AgentName.browser_agent
+        else "DESKTOP_OBSERVATION_SCALE"
+    )
+    return resolve_observation_scale(observation_scale, env_var)
+
+
+def _resolve_cli_fast_mode(
+    agent: AgentName,
+    fast_mode: bool | None,
+) -> bool:
+    """Resolve browser fast mode for the selected CLI agent."""
+    if agent is not AgentName.browser_agent:
+        return False
+    return resolve_bool_config(fast_mode, "BROWSER_FAST_MODE", default=False)
+
+
+def _resolve_cli_include_thoughts(
+    agent: AgentName,
+    include_thoughts: bool | None,
+) -> bool:
+    """Resolve whether model thought streaming should be enabled."""
+    env_var = (
+        "BROWSER_INCLUDE_THOUGHTS"
+        if agent is AgentName.browser_agent
+        else "DESKTOP_INCLUDE_THOUGHTS"
+    )
+    return resolve_bool_config(
+        include_thoughts,
+        env_var,
+        default=resolve_bool_config(None, "INCLUDE_THOUGHTS", default=True),
+    )
+
+
+def _resolve_cli_observation_delay_ms(
+    agent: AgentName,
+    observation_delay_ms: int | None,
+) -> int:
+    """Resolve desktop observation delay for the selected CLI agent."""
+    if agent is not AgentName.desktop_agent:
+        return 0
+    return resolve_int_config(
+        observation_delay_ms,
+        "DESKTOP_OBSERVATION_DELAY_MS",
+        default=1500,
+        minimum=0,
+    )
+
+
+def _resolve_cli_max_observation_images(
+    max_observation_images: int | None,
+) -> int:
+    """Resolve how many screenshot observations keep image payloads."""
+    return resolve_int_config(
+        max_observation_images,
+        "MAX_OBSERVATION_IMAGES",
+        default=2,
+        minimum=1,
+    )
+
+
+def _run_a2a_server(
+    agent: AgentName,
+    host: str,
+    port: int | None,
+    fast_mode: bool,
+    observation_delay_ms: int,
+    include_thoughts: bool,
+    max_observation_images: int,
+    observation_scale: float,
+) -> None:
     """Start the requested agent in A2A server mode."""
     if agent is AgentName.browser_agent:
-        start_browser_a2a_server(host=host, port=port or 8001)
+        start_browser_a2a_server(
+            host=host,
+            port=port or 8001,
+            fast_mode=fast_mode,
+            include_thoughts=include_thoughts,
+            max_observation_images=max_observation_images,
+            observation_scale=observation_scale,
+        )
         return
 
-    start_desktop_a2a_server(host=host, port=port or 8002)
+    start_desktop_a2a_server(
+        host=host,
+        port=port or 8002,
+        observation_delay_ms=observation_delay_ms,
+        include_thoughts=include_thoughts,
+        max_observation_images=max_observation_images,
+        observation_scale=observation_scale,
+    )
 
 
 @app.command()
@@ -148,10 +258,77 @@ def run(
         bool,
         typer.Option("--auto-confirm", help="Automatically approve safety-gated actions in interactive mode."),
     ] = False,
+    fast_mode: Annotated[
+        bool | None,
+        typer.Option(
+            "--fast-mode/--no-fast-mode",
+            help="Use faster but less conservative browser settling. Browser agent only.",
+        ),
+    ] = None,
+    include_thoughts: Annotated[
+        bool | None,
+        typer.Option(
+            "--include-thoughts/--no-include-thoughts",
+            help="Enable or disable model thought streaming when supported.",
+        ),
+    ] = None,
+    desktop_observation_delay_ms: Annotated[
+        int | None,
+        typer.Option(
+            "--desktop-observation-delay-ms",
+            help="Delay before each desktop screenshot in milliseconds. Desktop agent only.",
+        ),
+    ] = None,
+    max_observation_images: Annotated[
+        int | None,
+        typer.Option(
+            "--max-observation-images",
+            help="Keep only this many screenshot observations with image payloads in model history.",
+        ),
+    ] = None,
+    observation_scale: Annotated[
+        float | None,
+        typer.Option(
+            "--observation-scale",
+            help="Scale screenshots before sending them to the model. Use 1.0 for full resolution.",
+        ),
+    ] = None,
 ) -> None:
     """Run an agent interactively or expose it through a server protocol."""
+    try:
+        resolved_observation_scale = _resolve_cli_observation_scale(
+            agent=agent,
+            observation_scale=observation_scale,
+        )
+        resolved_fast_mode = _resolve_cli_fast_mode(
+            agent=agent,
+            fast_mode=fast_mode,
+        )
+        resolved_include_thoughts = _resolve_cli_include_thoughts(
+            agent=agent,
+            include_thoughts=include_thoughts,
+        )
+        resolved_desktop_observation_delay_ms = _resolve_cli_observation_delay_ms(
+            agent=agent,
+            observation_delay_ms=desktop_observation_delay_ms,
+        )
+        resolved_max_observation_images = _resolve_cli_max_observation_images(
+            max_observation_images=max_observation_images,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
     if mode is RunMode.a2a:
-        _run_a2a_server(agent=agent, host=host, port=port)
+        _run_a2a_server(
+            agent=agent,
+            host=host,
+            port=port,
+            fast_mode=resolved_fast_mode,
+            observation_delay_ms=resolved_desktop_observation_delay_ms,
+            include_thoughts=resolved_include_thoughts,
+            max_observation_images=resolved_max_observation_images,
+            observation_scale=resolved_observation_scale,
+        )
         return
 
     if mode is RunMode.mcp:
@@ -167,6 +344,10 @@ def run(
                 max_steps=max_steps,
                 headless=headless,
                 auto_confirm=auto_confirm,
+                fast_mode=resolved_fast_mode,
+                include_thoughts=resolved_include_thoughts,
+                max_observation_images=resolved_max_observation_images,
+                observation_scale=resolved_observation_scale,
             )
         )
         return
@@ -178,6 +359,10 @@ def run(
             task=task,
             max_steps=max_steps,
             auto_confirm=auto_confirm,
+            observation_delay_ms=resolved_desktop_observation_delay_ms,
+            include_thoughts=resolved_include_thoughts,
+            max_observation_images=resolved_max_observation_images,
+            observation_scale=resolved_observation_scale,
         )
     )
 

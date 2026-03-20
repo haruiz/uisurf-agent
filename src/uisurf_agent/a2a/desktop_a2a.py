@@ -30,6 +30,8 @@ from a2a.utils import new_agent_text_message, new_task
 from dotenv import load_dotenv
 
 from uisurf_agent.agents import DesktopAgent
+from uisurf_agent.utils.config_utils import resolve_bool_config, resolve_int_config
+from uisurf_agent.utils.screenshot_utils import resolve_observation_scale
 
 
 class DesktopAgentExecutor(AgentExecutor):
@@ -46,7 +48,13 @@ class DesktopAgentExecutor(AgentExecutor):
     lazily so server startup stays cheap.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        observation_delay_ms: int = 1500,
+        include_thoughts: bool = True,
+        max_observation_images: int = 2,
+        observation_scale: float = 1.0,
+    ) -> None:
         """Create the executor state.
 
         The wrapped ``DesktopAgent`` instance is not constructed at import time or
@@ -54,6 +62,10 @@ class DesktopAgentExecutor(AgentExecutor):
         until the first real request arrives.
         """
         self.agent: DesktopAgent | None = None
+        self._observation_delay_ms = observation_delay_ms
+        self._include_thoughts = include_thoughts
+        self._max_observation_images = max_observation_images
+        self._observation_scale = observation_scale
 
     async def _ensure_initialized(self) -> None:
         """Create and initialize the desktop agent if needed.
@@ -63,7 +75,13 @@ class DesktopAgentExecutor(AgentExecutor):
         Subsequent requests reuse the same in-memory agent object.
         """
         if self.agent is None:
-            self.agent = DesktopAgent(auto_confirm=True)
+            self.agent = DesktopAgent(
+                auto_confirm=True,
+                observation_delay_ms=self._observation_delay_ms,
+                include_thoughts=self._include_thoughts,
+                max_observation_images=self._max_observation_images,
+                observation_scale=self._observation_scale,
+            )
             await self.agent.initialize()
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -168,12 +186,27 @@ async def _run_agent_to_text(agent: DesktopAgent, prompt: str, max_steps: int = 
     return "\n".join(messages) if messages else "The desktop agent completed without a text response."
 
 
-def start_a2a_server(host: str | None = None, port: int | None = None) -> None:
+def start_a2a_server(
+    host: str | None = None,
+    port: int | None = None,
+    observation_delay_ms: int | None = None,
+    include_thoughts: bool | None = None,
+    max_observation_images: int | None = None,
+    observation_scale: float | None = None,
+) -> None:
     """Configure and launch the desktop-agent A2A HTTP server.
 
     Environment:
         ``AGENT_HOST``: Default host interface to bind. Defaults to ``localhost``.
         ``DESKTOP_AGENT_PORT``: Default HTTP port for this server. Defaults to ``8002``.
+        ``DESKTOP_OBSERVATION_DELAY_MS``: Delay before each desktop screenshot
+        capture in milliseconds.
+        ``DESKTOP_INCLUDE_THOUGHTS``: Desktop-only override for model thought
+        streaming. Falls back to ``INCLUDE_THOUGHTS``.
+        ``MAX_OBSERVATION_IMAGES``: Maximum number of screenshot observations to
+        keep with image payloads in model history.
+        ``DESKTOP_OBSERVATION_SCALE``: Optional screenshot scale override for the
+        desktop agent. Falls back to ``OBSERVATION_SCALE`` or ``1.0``.
 
     Args:
         host: Optional host override. When omitted, ``AGENT_HOST`` is used.
@@ -190,6 +223,27 @@ def start_a2a_server(host: str | None = None, port: int | None = None) -> None:
 
     host = host or os.environ.get("AGENT_HOST", "localhost")
     port = port or int(os.environ.get("DESKTOP_AGENT_PORT", "8002"))
+    resolved_observation_delay_ms = resolve_int_config(
+        observation_delay_ms,
+        "DESKTOP_OBSERVATION_DELAY_MS",
+        default=1500,
+        minimum=0,
+    )
+    resolved_include_thoughts = resolve_bool_config(
+        include_thoughts,
+        "DESKTOP_INCLUDE_THOUGHTS",
+        default=resolve_bool_config(None, "INCLUDE_THOUGHTS", default=True),
+    )
+    resolved_max_observation_images = resolve_int_config(
+        max_observation_images,
+        "MAX_OBSERVATION_IMAGES",
+        default=2,
+        minimum=1,
+    )
+    resolved_observation_scale = resolve_observation_scale(
+        observation_scale,
+        "DESKTOP_OBSERVATION_SCALE",
+    )
     public_url = os.environ.get("DESKTOP_AGENT_PUBLIC_URL", f"http://{host}:{port}/")
     capabilities = AgentCapabilities(streaming=True, push_notifications=True)
     skill = AgentSkill(
@@ -218,7 +272,12 @@ def start_a2a_server(host: str | None = None, port: int | None = None) -> None:
     )
 
     request_handler = DefaultRequestHandler(
-        agent_executor=DesktopAgentExecutor(),
+        agent_executor=DesktopAgentExecutor(
+            observation_delay_ms=resolved_observation_delay_ms,
+            include_thoughts=resolved_include_thoughts,
+            max_observation_images=resolved_max_observation_images,
+            observation_scale=resolved_observation_scale,
+        ),
         task_store=InMemoryTaskStore(),
     )
 

@@ -26,6 +26,16 @@ MAX_STEPS = 20
 HEADLESS = False
 # Whether safety confirmations should be auto-approved.
 AUTO_CONFIRM = False
+# Whether browser settling should favor speed over completeness.
+BROWSER_FAST_MODE = True
+# Whether model thought streaming should be enabled when supported.
+INCLUDE_THOUGHTS = True
+# Delay before each desktop screenshot in milliseconds.
+DESKTOP_OBSERVATION_DELAY_MS = 1000
+# Number of screenshot-bearing observations to keep in model history.
+MAX_OBSERVATION_IMAGES = 2
+# Scale screenshots before sending them to the model. Use 1.0 for full resolution.
+OBSERVATION_SCALE = 1.0
 
 
 async def main_safety_prompt_handler(function_call, auto_confirm: bool) -> SafetyPromptDecision:
@@ -70,6 +80,10 @@ async def run_browser_agent(
     max_steps: int = 30,
     headless: bool = False,
     auto_confirm: bool = False,
+    fast_mode: bool = False,
+    include_thoughts: bool = True,
+    max_observation_images: int = 2,
+    observation_scale: float = 1.0,
 ) -> None:
     """Run a standalone browser-agent session and log streamed events.
 
@@ -78,10 +92,21 @@ async def run_browser_agent(
         max_steps: Maximum number of observe/reason/act iterations.
         headless: Whether to launch the browser without a visible UI.
         auto_confirm: Whether safety prompts should be auto-approved.
+        fast_mode: Whether browser settling should favor speed over completeness.
+        include_thoughts: Whether model thought streaming should be enabled when
+            supported by the selected model.
+        max_observation_images: Number of screenshot-bearing observations to keep
+            in model history.
+        observation_scale: Scale factor applied to screenshots before sending
+            them to the model.
     """
     async with BrowserAgent(
         auto_confirm=auto_confirm,
         headless=headless,
+        fast_mode=fast_mode,
+        include_thoughts=include_thoughts,
+        max_observation_images=max_observation_images,
+        observation_scale=observation_scale,
     ) as agent:
         async for event in agent.run(
             task,
@@ -95,6 +120,10 @@ async def run_desktop_agent(
     task: str = "Open a text editor, create a new file, and write 'Hello World' in it.",
     max_steps: int = 10,
     auto_confirm: bool = False,
+    observation_delay_ms: int = 1500,
+    include_thoughts: bool = True,
+    max_observation_images: int = 2,
+    observation_scale: float = 1.0,
 ) -> None:
     """Run a standalone desktop-agent session and log streamed events.
 
@@ -102,8 +131,21 @@ async def run_desktop_agent(
         task: Natural-language instruction for the desktop agent.
         max_steps: Maximum number of observe/reason/act iterations.
         auto_confirm: Whether safety prompts should be auto-approved.
+        observation_delay_ms: Delay before each desktop screenshot capture.
+        include_thoughts: Whether model thought streaming should be enabled when
+            supported by the selected model.
+        max_observation_images: Number of screenshot-bearing observations to keep
+            in model history.
+        observation_scale: Scale factor applied to screenshots before sending
+            them to the model.
     """
-    async with DesktopAgent(auto_confirm=auto_confirm) as agent:
+    async with DesktopAgent(
+        auto_confirm=auto_confirm,
+        observation_delay_ms=observation_delay_ms,
+        include_thoughts=include_thoughts,
+        max_observation_images=max_observation_images,
+        observation_scale=observation_scale,
+    ) as agent:
         async for event in agent.run(
             task,
             max_steps=max_steps,
@@ -120,6 +162,10 @@ def main() -> None:
                 task=TASK,
                 max_steps=MAX_STEPS,
                 auto_confirm=AUTO_CONFIRM,
+                observation_delay_ms=DESKTOP_OBSERVATION_DELAY_MS,
+                include_thoughts=INCLUDE_THOUGHTS,
+                max_observation_images=MAX_OBSERVATION_IMAGES,
+                observation_scale=OBSERVATION_SCALE,
             )
         )
         return
@@ -130,6 +176,10 @@ def main() -> None:
             max_steps=MAX_STEPS,
             headless=HEADLESS,
             auto_confirm=AUTO_CONFIRM,
+            fast_mode=BROWSER_FAST_MODE,
+            include_thoughts=INCLUDE_THOUGHTS,
+            max_observation_images=MAX_OBSERVATION_IMAGES,
+            observation_scale=OBSERVATION_SCALE,
         )
     )
 

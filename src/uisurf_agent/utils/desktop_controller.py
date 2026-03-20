@@ -20,6 +20,8 @@ import mss
 import pyautogui
 from PIL import Image
 
+from .screenshot_utils import scale_image, validate_observation_scale
+
 
 PYAUTOGUI_KEY_ALIASES = {
     "/": "/",
@@ -65,6 +67,8 @@ class DesktopController:
         screen_width: int | None = None,
         screen_height: int | None = None,
         sleep_after_action: int | float = 0.1,
+        observation_delay_ms: int = 1500,
+        observation_scale: float = 1.0,
     ) -> None:
         """Initialize controller state and default automation timings.
 
@@ -75,10 +79,18 @@ class DesktopController:
                 is discovered from the host desktop during `setup()`.
             sleep_after_action: Delay inserted after mutating actions so the
                 desktop can visually settle before the next observation.
+            observation_delay_ms: Delay before each screenshot capture so the
+                desktop has time to visually settle after actions.
+            observation_scale: Scale factor applied to screenshots before they
+                are sent to the model. Coordinates still map to the full desktop.
         """
+        if observation_delay_ms < 0:
+            raise ValueError("observation_delay_ms must be greater than or equal to 0.")
         self._sleep_after_action = sleep_after_action
+        self._observation_delay_ms = observation_delay_ms
         self._screen_width = screen_width
         self._screen_height = screen_height
+        self._observation_scale = validate_observation_scale(observation_scale)
         self._last_target = "desktop://local"
         pyautogui.FAILSAFE = True
         pyautogui.PAUSE = 0
@@ -125,7 +137,7 @@ class DesktopController:
         return self._screen_height
 
     async def capture_screenshot(self) -> bytes:
-        """Capture the primary display as PNG bytes.
+        """Capture the primary display as PNG bytes for model observation.
 
         Returns:
             Raw PNG bytes representing the current desktop state.
@@ -138,19 +150,23 @@ class DesktopController:
         with mss.mss() as sct:
             monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
             screenshot = sct.grab(monitor)
-            image = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+            image = scale_image(
+                Image.frombytes("RGB", screenshot.size, screenshot.rgb),
+                self._observation_scale,
+            )
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             return buffer.getvalue()
 
-    async def wait_until_loaded(self, timeout_ms: int = 1500) -> None:
+    async def wait_until_loaded(self, timeout_ms: int | None = None) -> None:
         """Wait briefly for the desktop to visually settle.
 
         Args:
             timeout_ms: Number of milliseconds to pause before the next
                 observation or action.
         """
-        await asyncio.sleep(timeout_ms / 1000.0)
+        delay_ms = self._observation_delay_ms if timeout_ms is None else timeout_ms
+        await asyncio.sleep(delay_ms / 1000.0)
 
     def _normalize_point(self, x: int, y: int) -> tuple[int, int]:
         """Convert normalized 0-1000 coordinates into absolute screen pixels.

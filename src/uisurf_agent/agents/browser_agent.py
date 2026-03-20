@@ -70,14 +70,23 @@ def build_browser_generate_content_config() -> dict[str, Any]:
     }
 
 
-def maybe_add_thinking_config(config_kwargs: dict[str, Any], model_id: str) -> None:
+def maybe_add_thinking_config(
+    config_kwargs: dict[str, Any],
+    model_id: str,
+    include_thoughts: bool,
+) -> None:
     """Enable Gemini thought streaming when the selected model supports it.
 
     Args:
         config_kwargs: Mutable config dictionary that may be updated in place.
         model_id: Model identifier used to determine whether thoughts are
             supported for this run.
+        include_thoughts: Whether thought streaming should be enabled when the
+            model supports it.
     """
+    if not include_thoughts:
+        return
+
     model_parts = model_id.split("-")
     if len(model_parts) <= 1:
         return
@@ -140,6 +149,10 @@ class BrowserAgent(UIAgent):
         viewport_height: int = 760,
         headless: bool = False,
         animate_actions: bool = True,
+        fast_mode: bool = False,
+        include_thoughts: bool = True,
+        max_observation_images: int = 2,
+        observation_scale: float = 1.0,
         client: genai.Client | None = None,
     ) -> None:
         """Create a browser agent with a dedicated Playwright controller.
@@ -154,9 +167,22 @@ class BrowserAgent(UIAgent):
             headless: Whether the browser should run without a visible window.
             animate_actions: Whether pointer movements and clicks should be
                 visually animated for debugging/demo purposes.
+            fast_mode: Whether browser settling should favor speed over
+                completeness.
+            include_thoughts: Whether model thought streaming should be enabled
+                when supported by the selected model.
+            max_observation_images: Maximum number of screenshot-bearing
+                observations to keep with image payloads in model history.
+            observation_scale: Scale factor applied to screenshots before they
+                are sent to the model. Coordinates still use the full viewport.
             client: Optional preconfigured GenAI client instance.
         """
-        super().__init__(auto_confirm=auto_confirm, client=client)
+        super().__init__(
+            auto_confirm=auto_confirm,
+            client=client,
+            max_observation_images=max_observation_images,
+        )
+        self._include_thoughts = include_thoughts
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
         self._browser_controller = BrowserController(
@@ -164,6 +190,8 @@ class BrowserAgent(UIAgent):
             viewport_height=viewport_height,
             headless=headless,
             animate_actions=animate_actions,
+            fast_mode=fast_mode,
+            observation_scale=observation_scale,
         )
         self._client_config = self._build_client_config()
 
@@ -178,7 +206,7 @@ class BrowserAgent(UIAgent):
             A `GenerateContentConfig` configured for browser-based tool use.
         """
         config_kwargs = build_browser_generate_content_config()
-        maybe_add_thinking_config(config_kwargs, MODEL_ID)
+        maybe_add_thinking_config(config_kwargs, MODEL_ID, self._include_thoughts)
         logger.info("Client config: %s", config_kwargs)
         logger.info("Model: %s", MODEL_ID)
         return GenerateContentConfig(**config_kwargs)

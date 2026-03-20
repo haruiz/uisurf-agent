@@ -8,8 +8,59 @@ PASSWORD_REQUIRED="${PASSWORD_REQUIRED:-false}"
 export AGENT_HOST="${AGENT_HOST:-0.0.0.0}"
 export BROWSER_AGENT_PORT="${BROWSER_AGENT_PORT:-8001}"
 export DESKTOP_AGENT_PORT="${DESKTOP_AGENT_PORT:-8002}"
+export BROWSER_FAST_MODE="${BROWSER_FAST_MODE:-false}"
+export INCLUDE_THOUGHTS="${INCLUDE_THOUGHTS:-true}"
+export BROWSER_INCLUDE_THOUGHTS="${BROWSER_INCLUDE_THOUGHTS:-$INCLUDE_THOUGHTS}"
+export DESKTOP_INCLUDE_THOUGHTS="${DESKTOP_INCLUDE_THOUGHTS:-$INCLUDE_THOUGHTS}"
+export DESKTOP_OBSERVATION_DELAY_MS="${DESKTOP_OBSERVATION_DELAY_MS:-1500}"
+export MAX_OBSERVATION_IMAGES="${MAX_OBSERVATION_IMAGES:-2}"
+export OBSERVATION_SCALE="${OBSERVATION_SCALE:-1.0}"
+export BROWSER_OBSERVATION_SCALE="${BROWSER_OBSERVATION_SCALE:-$OBSERVATION_SCALE}"
+export DESKTOP_OBSERVATION_SCALE="${DESKTOP_OBSERVATION_SCALE:-$OBSERVATION_SCALE}"
 export BROWSER_AGENT_PUBLIC_URL="${BROWSER_AGENT_PUBLIC_URL:-http://localhost:6080/browser/}"
 export DESKTOP_AGENT_PUBLIC_URL="${DESKTOP_AGENT_PUBLIC_URL:-http://localhost:6080/desktop/}"
+
+resolve_bool_flag() {
+    local value
+    value=$(printf '%s' "${1}" | tr '[:upper:]' '[:lower:]')
+
+    case "${value}" in
+        1|true|yes|on)
+            printf '%s' "${2}"
+            ;;
+        0|false|no|off)
+            printf '%s' "${3}"
+            ;;
+        *)
+            echo "Invalid boolean value '${1}'. Use true/false, 1/0, yes/no, or on/off." >&2
+            exit 1
+            ;;
+    esac
+}
+
+BROWSER_FAST_MODE_FLAG="$(resolve_bool_flag "${BROWSER_FAST_MODE}" "--fast-mode" "--no-fast-mode")"
+BROWSER_INCLUDE_THOUGHTS_FLAG="$(resolve_bool_flag "${BROWSER_INCLUDE_THOUGHTS}" "--include-thoughts" "--no-include-thoughts")"
+DESKTOP_INCLUDE_THOUGHTS_FLAG="$(resolve_bool_flag "${DESKTOP_INCLUDE_THOUGHTS}" "--include-thoughts" "--no-include-thoughts")"
+
+print_agent_settings() {
+    echo "Agent settings:"
+    echo "  Browser agent:"
+    echo "    host=${AGENT_HOST}"
+    echo "    port=${BROWSER_AGENT_PORT}"
+    echo "    public_url=${BROWSER_AGENT_PUBLIC_URL}"
+    echo "    fast_mode=${BROWSER_FAST_MODE}"
+    echo "    include_thoughts=${BROWSER_INCLUDE_THOUGHTS}"
+    echo "    max_observation_images=${MAX_OBSERVATION_IMAGES}"
+    echo "    observation_scale=${BROWSER_OBSERVATION_SCALE}"
+    echo "  Desktop agent:"
+    echo "    host=${AGENT_HOST}"
+    echo "    port=${DESKTOP_AGENT_PORT}"
+    echo "    public_url=${DESKTOP_AGENT_PUBLIC_URL}"
+    echo "    include_thoughts=${DESKTOP_INCLUDE_THOUGHTS}"
+    echo "    observation_delay_ms=${DESKTOP_OBSERVATION_DELAY_MS}"
+    echo "    max_observation_images=${MAX_OBSERVATION_IMAGES}"
+    echo "    observation_scale=${DESKTOP_OBSERVATION_SCALE}"
+}
 
 echo "Preparing environment..."
 
@@ -110,19 +161,33 @@ sleep 3
 # Start Agents
 # -----------------------------
 echo "Starting agents..."
+print_agent_settings
 
 cd /app
-uv run uisurf_agent run browser_agent \
-    --mode a2a \
-    --host "${AGENT_HOST}" \
-    --port "${BROWSER_AGENT_PORT}" \
-    > /tmp/browser-agent.log 2>&1 &
+browser_agent_args=(
+    uv run uisurf_agent run browser_agent
+    --mode a2a
+    --host "${AGENT_HOST}"
+    --port "${BROWSER_AGENT_PORT}"
+    "${BROWSER_FAST_MODE_FLAG}"
+    "${BROWSER_INCLUDE_THOUGHTS_FLAG}"
+    --max-observation-images "${MAX_OBSERVATION_IMAGES}"
+    --observation-scale "${BROWSER_OBSERVATION_SCALE}"
+)
 
-uv run uisurf_agent run desktop_agent \
-    --mode a2a \
-    --host "${AGENT_HOST}" \
-    --port "${DESKTOP_AGENT_PORT}" \
-    > /tmp/desktop-agent.log 2>&1 &
+desktop_agent_args=(
+    uv run uisurf_agent run desktop_agent
+    --mode a2a
+    --host "${AGENT_HOST}"
+    --port "${DESKTOP_AGENT_PORT}"
+    "${DESKTOP_INCLUDE_THOUGHTS_FLAG}"
+    --desktop-observation-delay-ms "${DESKTOP_OBSERVATION_DELAY_MS}"
+    --max-observation-images "${MAX_OBSERVATION_IMAGES}"
+    --observation-scale "${DESKTOP_OBSERVATION_SCALE}"
+)
+
+"${browser_agent_args[@]}" > /tmp/browser-agent.log 2>&1 &
+"${desktop_agent_args[@]}" > /tmp/desktop-agent.log 2>&1 &
 
 # -----------------------------
 # Start reverse proxy
@@ -258,6 +323,8 @@ nginx -g 'daemon off;' > /tmp/nginx.log 2>&1 &
 # -----------------------------
 # Display info
 # -----------------------------
+echo ""
+print_agent_settings
 echo ""
 echo "===================================="
 echo "Container ready"

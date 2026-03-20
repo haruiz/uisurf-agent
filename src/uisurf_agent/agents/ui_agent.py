@@ -126,6 +126,7 @@ class UIAgent(ABC):
         auto_confirm: bool = False,
         client: genai.Client | None = None,
         config: genai.types.GenerateContentConfig | None = None,
+        max_observation_images: int = 2,
     ) -> None:
         """Initialize shared agent dependencies and behavior flags.
 
@@ -136,10 +137,15 @@ class UIAgent(ABC):
                 default client instance is created.
             config: Optional model configuration stored for subclasses that want
                 to reuse or extend a shared config object.
+            max_observation_images: Maximum number of screenshot-bearing
+                observations to keep with image payloads in model history.
         """
+        if max_observation_images < 1:
+            raise ValueError("max_observation_images must be greater than or equal to 1.")
         self.auto_confirm = auto_confirm
         self.client = client or genai.Client()
         self.config = config
+        self._max_observation_images = max_observation_images
         self._safety_prompt_handler: SafetyPromptHandler = default_safety_prompt_handler
 
     async def __aenter__(self) -> "UIAgent":
@@ -258,7 +264,10 @@ class UIAgent(ABC):
 
             for step in range(max_steps):
                 logger.debug("Step %d/%d: %s", step + 1, max_steps, task)
-                response = await self.reason(task, history)
+                response = await self.reason(
+                    task,
+                    self.prepare_history_for_reasoning(task, history),
+                )
                 await self.record_model_response(response, history)
                 result = await self.act(response, history)
 
@@ -289,3 +298,115 @@ class UIAgent(ABC):
             )
         finally:
             self._safety_prompt_handler = previous_safety_prompt_handler
+
+    def prepare_history_for_reasoning(self, task: str, history: list[Any]) -> list[Any]:
+        """Return the model history view used for the next reasoning call."""
+        del task
+        if self._max_observation_images < 1:
+            return history
+
+        image_indexes = [
+            index for index, item in enumerate(history) if self._content_has_image_payload(item)
+        ]
+        if len(image_indexes) <= self._max_observation_images:
+            return history
+
+        image_indexes_to_keep = set(image_indexes[-self._max_observation_images :])
+        prepared_history: list[Any] = []
+        for index, item in enumerate(history):
+            if index in image_indexes_to_keep or index not in image_indexes:
+                prepared_history.append(item)
+                continue
+
+            stripped_item = self._strip_images_from_content(item)
+            if stripped_item is not None:
+                prepared_history.append(stripped_item)
+
+        return prepared_history
+
+    def _content_has_image_payload(self, item: Any) -> bool:
+        """Return whether a history item contains image data."""
+        for part in getattr(item, "parts", None) or []:
+            if self._part_has_image_payload(part):
+                return True
+        return False
+
+    def _part_has_image_payload(self, part: Any) -> bool:
+        """Return whether a model part or function response contains an image."""
+        inline_data = getattr(part, "inline_data", None)
+        mime_type = getattr(inline_data, "mime_type", None)
+        if isinstance(mime_type, str) and mime_type.startswith("image/"):
+            return True
+
+        function_response = getattr(part, "function_response", None)
+        if function_response is None:
+            return False
+
+        for response_part in getattr(function_response, "parts", None) or []:
+            response_blob = getattr(response_part, "inline_data", None)
+            response_mime_type = getattr(response_blob, "mime_type", None)
+            if isinstance(response_mime_type, str) and response_mime_type.startswith("image/"):
+                return True
+        return False
+
+    def _strip_images_from_content(self, item: Any) -> Any | None:
+        """Return a content item with image payloads removed, when possible."""
+        if not hasattr(item, "parts"):
+            return item
+
+        stripped_parts = []
+        for part in getattr(item, "parts", None) or []:
+            stripped_part = self._strip_images_from_part(part)
+            if stripped_part is not None:
+                stripped_parts.append(stripped_part)
+
+        if not stripped_parts:
+            return None
+
+        return self._copy_model(item, parts=stripped_parts)
+
+    def _strip_images_from_part(self, part: Any) -> Any | None:
+        """Return a part without image payloads."""
+        if self._part_has_direct_inline_image(part):
+            return None
+
+        function_response = getattr(part, "function_response", None)
+        if function_response is None:
+            return part
+
+        original_response_parts = list(getattr(function_response, "parts", None) or [])
+        stripped_response_parts = [
+            response_part
+            for response_part in original_response_parts
+            if not self._response_part_has_inline_image(response_part)
+        ]
+        if len(stripped_response_parts) == len(original_response_parts):
+            return part
+
+        return self._copy_model(
+            part,
+            function_response=self._copy_model(
+                function_response,
+                parts=stripped_response_parts,
+            ),
+        )
+
+    def _part_has_direct_inline_image(self, part: Any) -> bool:
+        """Return whether a part directly embeds an image payload."""
+        inline_data = getattr(part, "inline_data", None)
+        mime_type = getattr(inline_data, "mime_type", None)
+        return isinstance(mime_type, str) and mime_type.startswith("image/")
+
+    def _response_part_has_inline_image(self, response_part: Any) -> bool:
+        """Return whether a function response part embeds an image payload."""
+        inline_data = getattr(response_part, "inline_data", None)
+        mime_type = getattr(inline_data, "mime_type", None)
+        return isinstance(mime_type, str) and mime_type.startswith("image/")
+
+    def _copy_model(self, model: Any, **updates: Any) -> Any:
+        """Clone a pydantic-style model with selected updates."""
+        if hasattr(model, "model_copy"):
+            return model.model_copy(update=updates)
+        if hasattr(model, "copy"):
+            return model.copy(update=updates)
+        raise TypeError(f"Unsupported model copy for type {type(model)!r}")
