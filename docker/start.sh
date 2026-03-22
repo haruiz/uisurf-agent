@@ -5,6 +5,7 @@ export DISPLAY=:1
 export USER=root
 export HOME=/root
 PASSWORD_REQUIRED="${PASSWORD_REQUIRED:-false}"
+export SESSION_CONTROL_MODE="${SESSION_CONTROL_MODE:-agent}"
 export AGENT_HOST="${AGENT_HOST:-0.0.0.0}"
 export BROWSER_AGENT_PORT="${BROWSER_AGENT_PORT:-8001}"
 export DESKTOP_AGENT_PORT="${DESKTOP_AGENT_PORT:-8002}"
@@ -19,6 +20,29 @@ export BROWSER_OBSERVATION_SCALE="${BROWSER_OBSERVATION_SCALE:-$OBSERVATION_SCAL
 export DESKTOP_OBSERVATION_SCALE="${DESKTOP_OBSERVATION_SCALE:-$OBSERVATION_SCALE}"
 export BROWSER_AGENT_PUBLIC_URL="${BROWSER_AGENT_PUBLIC_URL:-http://localhost:6080/browser/}"
 export DESKTOP_AGENT_PUBLIC_URL="${DESKTOP_AGENT_PUBLIC_URL:-http://localhost:6080/desktop/}"
+
+resolve_auto_confirm_default() {
+    local control_mode
+    control_mode=$(printf '%s' "${1}" | tr '[:upper:]' '[:lower:]')
+
+    case "${control_mode}" in
+        agent)
+            printf 'true'
+            ;;
+        manual)
+            printf 'false'
+            ;;
+        *)
+            echo "Invalid SESSION_CONTROL_MODE '${1}'. Use agent or manual." >&2
+            exit 1
+            ;;
+    esac
+}
+
+AUTO_CONFIRM_DEFAULT="$(resolve_auto_confirm_default "${SESSION_CONTROL_MODE}")"
+export AUTO_CONFIRM="${AUTO_CONFIRM:-$AUTO_CONFIRM_DEFAULT}"
+export BROWSER_AUTO_CONFIRM="${BROWSER_AUTO_CONFIRM:-$AUTO_CONFIRM}"
+export DESKTOP_AUTO_CONFIRM="${DESKTOP_AUTO_CONFIRM:-$AUTO_CONFIRM}"
 
 resolve_bool_flag() {
     local value
@@ -44,11 +68,15 @@ DESKTOP_INCLUDE_THOUGHTS_FLAG="$(resolve_bool_flag "${DESKTOP_INCLUDE_THOUGHTS}"
 
 print_agent_settings() {
     echo "Agent settings:"
+    echo "  Session:"
+    echo "    control_mode=${SESSION_CONTROL_MODE}"
+    echo "    auto_confirm=${AUTO_CONFIRM}"
     echo "  Browser agent:"
     echo "    host=${AGENT_HOST}"
     echo "    port=${BROWSER_AGENT_PORT}"
     echo "    public_url=${BROWSER_AGENT_PUBLIC_URL}"
     echo "    fast_mode=${BROWSER_FAST_MODE}"
+    echo "    auto_confirm=${BROWSER_AUTO_CONFIRM}"
     echo "    include_thoughts=${BROWSER_INCLUDE_THOUGHTS}"
     echo "    max_observation_images=${MAX_OBSERVATION_IMAGES}"
     echo "    observation_scale=${BROWSER_OBSERVATION_SCALE}"
@@ -56,6 +84,7 @@ print_agent_settings() {
     echo "    host=${AGENT_HOST}"
     echo "    port=${DESKTOP_AGENT_PORT}"
     echo "    public_url=${DESKTOP_AGENT_PUBLIC_URL}"
+    echo "    auto_confirm=${DESKTOP_AUTO_CONFIRM}"
     echo "    include_thoughts=${DESKTOP_INCLUDE_THOUGHTS}"
     echo "    observation_delay_ms=${DESKTOP_OBSERVATION_DELAY_MS}"
     echo "    max_observation_images=${MAX_OBSERVATION_IMAGES}"
@@ -202,6 +231,9 @@ events {
 }
 
 http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
     map \$http_upgrade \$connection_upgrade {
         default upgrade;
         '' close;
@@ -302,6 +334,10 @@ http {
         location /websockify {
             proxy_pass http://127.0.0.1:6081;
             proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection \$connection_upgrade;
             proxy_set_header Host \$host;
@@ -310,9 +346,16 @@ http {
         location / {
             proxy_pass http://127.0.0.1:6081;
             proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection \$connection_upgrade;
             proxy_set_header Host \$host;
+            add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
+            add_header Pragma "no-cache" always;
+            add_header Expires "0" always;
         }
     }
 }

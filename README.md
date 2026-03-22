@@ -72,6 +72,39 @@ Current top-level command:
 uv run uisurf_agent run --help
 ```
 
+Convenience `make` targets are also available for local A2A server runs:
+
+```bash
+make run-browser
+make run-desktop
+make run-both
+```
+
+These targets start long-running local servers instead of one-off tasks. By default they bind to:
+
+```bash
+browser: http://127.0.0.1:8001/
+desktop: http://127.0.0.1:8002/
+```
+
+You can override the bind host and ports from the shell:
+
+```bash
+make run-browser HOST=127.0.0.1 BROWSER_PORT=8001
+make run-desktop HOST=127.0.0.1 DESKTOP_PORT=8002
+make run-both HOST=127.0.0.1 BROWSER_PORT=8001 DESKTOP_PORT=8002
+```
+
+If one of those ports is already in use, the `make` target will exit early with a
+clear message. Rerun with free ports if needed.
+
+If you want the previous one-off local task mode, use the interactive targets:
+
+```bash
+make run-browser-interactive TASK="Open example.com and summarize the page"
+make run-desktop-interactive TASK="Open Terminal and run pwd"
+```
+
 ### Run the browser agent interactively
 
 ```bash

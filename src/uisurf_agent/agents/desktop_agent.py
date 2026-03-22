@@ -48,6 +48,10 @@ SYSTEM_INSTRUCTION = (
     "Coordinates for click, move_cursor, and scroll are normalized on a 0-1000 grid. "
     "Use the screenshots and the full interaction history to answer questions "
     "about what is visible on screen or what was observed earlier in the run. "
+    "When an application window opens cropped, partly off-screen, or too small to "
+    "show the controls you need, maximize the active window before continuing. "
+    "If the visible area looks clipped and buttons or sidebars are missing, first "
+    "stabilize the window layout by maximizing it, then reassess the screenshot. "
     "If you already have enough information from prior screenshots or prior "
     "observations, respond directly instead of taking more actions. "
     "Do not close windows, quit applications, or clean up the desktop unless the "
@@ -420,15 +424,15 @@ class DesktopAgent(UIAgent):
         thoughts = self._extract_thoughts(candidate)
         self._log_thoughts(thoughts)
         events.extend(
-            AgentEvent(eventType="thought", payload={"text": thought})
+            self._build_agent_event("thought", {"text": thought})
             for thought in thoughts
         )
 
         function_calls = self._extract_function_calls(candidate)
         events.extend(
-            AgentEvent(
-                eventType="function_call",
-                payload={"name": function_call.name, "args": dict(function_call.args)},
+            self._build_agent_event(
+                "function_call",
+                {"name": function_call.name, "args": dict(function_call.args)},
             )
             for function_call in function_calls
         )
@@ -710,9 +714,9 @@ class DesktopAgent(UIAgent):
                 )
             )
             events.append(
-                AgentEvent(
-                    eventType="function_response",
-                    payload={
+                self._build_agent_event(
+                    "function_response",
+                    {
                         "name": name,
                         "result": result,
                         "url": current_state,

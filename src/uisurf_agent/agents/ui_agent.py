@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -47,7 +48,22 @@ async def default_safety_prompt_handler(
     if auto_confirm:
         return True, True
 
-    user_input = input(f"Allow the agent to execute '{function_call.name}'? (y/n): ")
+    if not sys.stdin or not sys.stdin.isatty():
+        logger.warning(
+            "Safety confirmation requested for '%s' without an interactive stdin. Denying the action.",
+            function_call.name,
+        )
+        return False, False
+
+    try:
+        user_input = input(f"Allow the agent to execute '{function_call.name}'? (y/n): ")
+    except EOFError:
+        logger.warning(
+            "Safety confirmation requested for '%s' but stdin returned EOF. Denying the action.",
+            function_call.name,
+        )
+        return False, False
+
     allowed = user_input.strip().lower() in {"y", "yes"}
     if not allowed:
         logger.debug("Action denied by user.")
@@ -147,6 +163,33 @@ class UIAgent(ABC):
         self.config = config
         self._max_observation_images = max_observation_images
         self._safety_prompt_handler: SafetyPromptHandler = default_safety_prompt_handler
+
+    def get_agent_event_name(self) -> str:
+        """Return the stable agent identifier attached to streamed events."""
+        return self.__class__.__name__
+
+    def _with_agent_event_metadata(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Attach agent metadata to an event payload when it is missing."""
+        if "agent_name" in payload or "agentName" in payload:
+            return payload
+        return {
+            **payload,
+            "agent_name": self.get_agent_event_name(),
+        }
+
+    def _build_agent_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        is_final: bool = False,
+    ) -> AgentEvent:
+        """Create a structured event stamped with the emitting agent name."""
+        return AgentEvent(
+            eventType=event_type,
+            payload=self._with_agent_event_metadata(payload),
+            isFinal=is_final,
+        )
 
     async def __aenter__(self) -> "UIAgent":
         """Enter the async context manager and initialize agent resources.
@@ -281,20 +324,20 @@ class UIAgent(ABC):
                     )
 
                 if result.message:
-                    yield AgentEvent(
-                        eventType="message",
-                        payload={"text": result.message},
-                        isFinal=result.done,
+                    yield self._build_agent_event(
+                        "message",
+                        {"text": result.message},
+                        is_final=result.done,
                     )
 
                 if result.done:
                     return
         except Exception as exc:
             logger.exception("An unexpected error occurred during agent execution: %s", exc)
-            yield AgentEvent(
-                eventType="message",
-                payload={"text": f"An unexpected error occurred during agent execution: {exc!s}"},
-                isFinal=True,
+            yield self._build_agent_event(
+                "message",
+                {"text": f"An unexpected error occurred during agent execution: {exc!s}"},
+                is_final=True,
             )
         finally:
             self._safety_prompt_handler = previous_safety_prompt_handler

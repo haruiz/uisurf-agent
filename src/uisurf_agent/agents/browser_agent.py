@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from google import genai
+from google.genai import types
 from google.genai.types import (
     ComputerUse,
     Content,
@@ -25,7 +26,8 @@ from google.genai.types import (
     GenerateContentConfig,
     Part,
     ThinkingConfig,
-    Tool, FunctionResponsePart,
+    Tool,
+    FunctionResponsePart,
 )
 
 from uisurf_agent.utils.browser_controller import BrowserController
@@ -44,14 +46,61 @@ BROWSER_SYSTEM_INSTRUCTION = (
     "When the task requires comparing information across pages or sites, keep "
     "track of what you observed earlier in the run and produce a direct textual "
     "answer once you have enough evidence. "
+    "Use clear_text_input before retyping into a form field when the field "
+    "already contains text that should be replaced. "
+    "If the browser window, dialog, or visible page area appears clipped so key "
+    "controls are outside the visible region, first enlarge the active browser "
+    "window, maximize/fullscreen it when available, or otherwise bring the "
+    "required controls into view before continuing. "
     "Do not continue clicking or navigating if the answer can already be derived "
     "from the screenshots and history. "
     "Only use browser actions when more evidence is needed."
 )
 
 
-def build_browser_generate_content_config() -> dict[str, Any]:
+def clear_text_input(x: int | None = None, y: int | None = None) -> dict[str, Any]:
+    """Declare a request to clear a browser text input.
+
+    Args:
+        x: Optional normalized horizontal coordinate (0-1000) to click before
+            clearing.
+        y: Optional normalized vertical coordinate (0-1000) to click before
+            clearing.
+
+    Returns:
+        A payload echoing the requested clear-input action.
+    """
+    return {"x": x, "y": y}
+
+
+BROWSER_CUSTOM_FUNCTIONS = (clear_text_input,)
+
+
+def build_browser_custom_function_declarations(
+    client: genai.Client,
+) -> list[types.FunctionDeclaration]:
+    """Build custom browser function declarations for the Gemini config.
+
+    Args:
+        client: GenAI client used by `from_callable()` to construct declarations.
+
+    Returns:
+        Function declarations describing browser-specific custom tools.
+    """
+    return [
+        types.FunctionDeclaration.from_callable(client=client, callable=function)
+        for function in BROWSER_CUSTOM_FUNCTIONS
+    ]
+
+
+def build_browser_generate_content_config(client: genai.Client) -> dict[str, Any]:
     """Build the base Gemini config payload for browser tool use.
+
+    The browser config combines Gemini's predefined browser computer-use tool
+    with browser-specific custom function declarations.
+
+    Args:
+        client: GenAI client used to build callable-based custom declarations.
 
     Returns:
         A dictionary of keyword arguments used to create
@@ -64,7 +113,8 @@ def build_browser_generate_content_config() -> dict[str, Any]:
                     environment=Environment.ENVIRONMENT_BROWSER,
                     excluded_predefined_functions=BROWSER_EXCLUDED_PREDEFINED_FUNCTIONS,
                 )
-            )
+            ),
+            Tool(function_declarations=build_browser_custom_function_declarations(client)),
         ],
         "system_instruction": BROWSER_SYSTEM_INSTRUCTION,
     }
@@ -195,17 +245,20 @@ class BrowserAgent(UIAgent):
         )
         self._client_config = self._build_client_config()
 
+
+
     def _build_client_config(self) -> GenerateContentConfig:
         """Build the model configuration used for browser computer-use requests.
 
-        The config enables Gemini's predefined browser tool environment and, when
-        the selected model version supports it, enables thought streaming so the
-        agent can log intermediate reasoning text alongside function calls.
+        The config enables Gemini's predefined browser tool environment,
+        browser-specific custom functions, and, when the selected model version
+        supports it, thought streaming so the agent can log intermediate
+        reasoning text alongside function calls.
 
         Returns:
             A `GenerateContentConfig` configured for browser-based tool use.
         """
-        config_kwargs = build_browser_generate_content_config()
+        config_kwargs = build_browser_generate_content_config(self.client)
         maybe_add_thinking_config(config_kwargs, MODEL_ID, self._include_thoughts)
         logger.info("Client config: %s", config_kwargs)
         logger.info("Model: %s", MODEL_ID)
@@ -309,15 +362,15 @@ class BrowserAgent(UIAgent):
         thoughts = self._extract_thoughts(candidate)
         self._log_thoughts(thoughts)
         events.extend(
-            AgentEvent(eventType="thought", payload={"text": thought})
+            self._build_agent_event("thought", {"text": thought})
             for thought in thoughts
         )
 
         function_calls = self._extract_function_calls(candidate)
         events.extend(
-            AgentEvent(
-                eventType="function_call",
-                payload={"name": function_call.name, "args": dict(function_call.args)},
+            self._build_agent_event(
+                "function_call",
+                {"name": function_call.name, "args": dict(function_call.args)},
             )
             for function_call in function_calls
         )
@@ -376,7 +429,7 @@ class BrowserAgent(UIAgent):
             logger.debug("Model reasoning: %s", " ".join(thoughts))
 
     def _extract_function_calls(self, candidate: Any) -> list[Any]:
-        """Collect all predefined browser function calls from a model candidate.
+        """Collect all browser function calls from a model candidate.
 
         Args:
             candidate: The chosen Gemini candidate object.
@@ -439,7 +492,7 @@ class BrowserAgent(UIAgent):
         return results
 
     async def _execute_function_call(self, function_call: Any) -> str:
-        """Execute one predefined Gemini browser function against Playwright.
+        """Execute one browser function against Playwright.
 
         Supported functions are mapped onto the `BrowserController` or direct page
         keyboard interactions. Unknown functions are reported instead of raising,
@@ -454,16 +507,22 @@ class BrowserAgent(UIAgent):
             `error: ...`.
         """
         action_name = function_call.name
-        args = function_call.args
+        args = dict(function_call.args)
+        args.pop("safety_decision", None)
 
         try:
             handler = self._get_function_handler(action_name)
-            if handler is None:
-                logger.warning("Unknown function call from model: %s", action_name)
-                return "unknown_function"
+            if handler is not None:
+                await handler(args)
+                return "success"
 
-            await handler(args)
-            return "success"
+            controller_callable = getattr(self._browser_controller, action_name, None)
+            if controller_callable is not None and callable(controller_callable):
+                await controller_callable(**args)
+                return "success"
+
+            logger.warning("Unknown function call from model: %s", action_name)
+            return "unknown_function"
         except Exception as exc:
             logger.exception("Error executing %s", action_name)
             return f"error: {exc!s}"
@@ -634,9 +693,9 @@ class BrowserAgent(UIAgent):
                 )
             )
             events.append(
-                AgentEvent(
-                    eventType="function_response",
-                    payload={
+                self._build_agent_event(
+                    "function_response",
+                    {
                         "name": name,
                         "result": result,
                         "url": current_url,

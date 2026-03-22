@@ -7,6 +7,7 @@ methods such as scrolling and history navigation.
 
 import asyncio
 import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Union
@@ -88,13 +89,17 @@ CUA_KEY_TO_PLAYWRIGHT_KEY = {
     "backspace": "Backspace",
     "capslock": "CapsLock",
     "cmd": "Meta",
+    "command": "Meta",
+    "control": "Control",
     "ctrl": "Control",
     "delete": "Delete",
     "end": "End",
     "enter": "Enter",
     "esc": "Escape",
+    "escape": "Escape",
     "home": "Home",
     "insert": "Insert",
+    "meta": "Meta",
     "option": "Alt",
     "pagedown": "PageDown",
     "pageup": "PageUp",
@@ -519,6 +524,162 @@ class BrowserController:
             x, y = self._animation.last_cursor_position
             await self._animation.type_pulse(self.page, x, y)
         await self.page.keyboard.type(text)
+        await self._sleep_after_action_if_needed()
+
+    async def clear_text_input(
+        self,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> None:
+        """Clear the focused text input, optionally focusing it first.
+
+        Args:
+            x: Optional normalized horizontal coordinate (0-1000) to click
+                before clearing.
+            y: Optional normalized vertical coordinate (0-1000) to click before
+                clearing.
+        """
+        if not self.page:
+            raise RuntimeError("No page active.")
+        if (x is None) != (y is None):
+            raise ValueError("Both x and y must be provided together.")
+
+        if x is not None and y is not None:
+            target_x, target_y = self._normalize_point(x=x, y=y)
+            await self.click_coords(target_x, target_y)
+            await asyncio.sleep(0.1)
+
+        has_editable_focus = await self.page.evaluate(
+            """() => {
+                const active = document.activeElement;
+                if (!active) {
+                    return false;
+                }
+
+                const nonTextInputTypes = new Set([
+                    "button",
+                    "checkbox",
+                    "color",
+                    "date",
+                    "datetime-local",
+                    "file",
+                    "hidden",
+                    "image",
+                    "month",
+                    "radio",
+                    "range",
+                    "reset",
+                    "submit",
+                    "time",
+                    "week"
+                ]);
+
+                if (active instanceof HTMLTextAreaElement) {
+                    return !active.disabled && !active.readOnly;
+                }
+
+                if (active instanceof HTMLInputElement) {
+                    const type = (active.type || "text").toLowerCase();
+                    return !active.disabled && !active.readOnly && !nonTextInputTypes.has(type);
+                }
+
+                return active instanceof HTMLElement && active.isContentEditable;
+            }"""
+        )
+        if not has_editable_focus:
+            raise RuntimeError("No focused text input to clear.")
+
+        if self.animate_actions:
+            cursor_x, cursor_y = self._animation.last_cursor_position
+            await self._animation.type_pulse(self.page, cursor_x, cursor_y)
+
+        modifier_key = "Meta" if sys.platform == "darwin" else "Control"
+        await self.page.keyboard.press(f"{modifier_key}+A")
+        await self.page.keyboard.press("Backspace")
+
+        cleared = await self.page.evaluate(
+            """() => {
+                const active = document.activeElement;
+                if (!active) {
+                    return false;
+                }
+
+                if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+                    return active.value === "";
+                }
+
+                if (active instanceof HTMLElement && active.isContentEditable) {
+                    return active.textContent === "";
+                }
+
+                return false;
+            }"""
+        )
+        if not cleared:
+            cleared = await self.page.evaluate(
+                """() => {
+                    const active = document.activeElement;
+                    if (!active) {
+                        return false;
+                    }
+
+                    const dispatchInputEvent = (element) => {
+                        const view = element.ownerDocument.defaultView;
+                        if (view && typeof view.InputEvent === "function") {
+                            element.dispatchEvent(
+                                new view.InputEvent("input", {
+                                    bubbles: true,
+                                    composed: true,
+                                    inputType: "deleteContentBackward",
+                                    data: null
+                                })
+                            );
+                            return;
+                        }
+                        element.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+                    };
+
+                    if (active instanceof HTMLInputElement) {
+                        const descriptor = Object.getOwnPropertyDescriptor(
+                            HTMLInputElement.prototype,
+                            "value",
+                        );
+                        if (descriptor && descriptor.set) {
+                            descriptor.set.call(active, "");
+                        } else {
+                            active.value = "";
+                        }
+                        dispatchInputEvent(active);
+                        return active.value === "";
+                    }
+
+                    if (active instanceof HTMLTextAreaElement) {
+                        const descriptor = Object.getOwnPropertyDescriptor(
+                            HTMLTextAreaElement.prototype,
+                            "value",
+                        );
+                        if (descriptor && descriptor.set) {
+                            descriptor.set.call(active, "");
+                        } else {
+                            active.value = "";
+                        }
+                        dispatchInputEvent(active);
+                        return active.value === "";
+                    }
+
+                    if (active instanceof HTMLElement && active.isContentEditable) {
+                        active.textContent = "";
+                        dispatchInputEvent(active);
+                        return active.textContent === "";
+                    }
+
+                    return false;
+                }"""
+            )
+
+        if not cleared:
+            raise RuntimeError("Failed to clear focused text input.")
+
         await self._sleep_after_action_if_needed()
 
     async def keypress(self, keys: List[str]):

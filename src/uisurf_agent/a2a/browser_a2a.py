@@ -17,13 +17,16 @@ navigation, page interaction, and reasoning remain inside ``BrowserAgent``.
 """
 
 import os
+import json
 import logging
+import asyncio
+from dataclasses import dataclass
+from typing import Any
 
 import uvicorn
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.events import EventQueue
-from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill, TaskState, Part, TextPart
 from a2a.utils import (
@@ -33,12 +36,23 @@ from a2a.utils import (
 from dotenv import load_dotenv
 
 from uisurf_agent.agents import BrowserAgent
+from uisurf_agent.agents.ui_agent import SafetyPromptDecision
+from uisurf_agent.a2a.confirmation_request_handler import ConfirmationRequestHandler
 from uisurf_agent.utils.config_utils import resolve_bool_config, resolve_int_config
 from uisurf_agent.utils.screenshot_utils import resolve_observation_scale
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PendingSafetyPrompt:
+    """One outstanding user confirmation request for a task."""
+
+    future: asyncio.Future[SafetyPromptDecision]
+    function_name: str
+    explanation: str
 
 
 class BrowserAgentExecutor(AgentExecutor):
@@ -59,6 +73,7 @@ class BrowserAgentExecutor(AgentExecutor):
         fast_mode: bool = False,
         include_thoughts: bool = True,
         max_observation_images: int = 2,
+        auto_confirm: bool = False,
     ) -> None:
         """Create executor state with deferred agent construction."""
         self.agent: BrowserAgent | None = None
@@ -66,6 +81,8 @@ class BrowserAgentExecutor(AgentExecutor):
         self._fast_mode = fast_mode
         self._include_thoughts = include_thoughts
         self._max_observation_images = max_observation_images
+        self._auto_confirm = auto_confirm
+        self._pending_prompts: dict[str, PendingSafetyPrompt] = {}
 
     async def _ensure_initialized(self) -> None:
         """Create and initialize the browser agent if it is not ready.
@@ -76,13 +93,112 @@ class BrowserAgentExecutor(AgentExecutor):
         """
         if self.agent is None:
             self.agent = BrowserAgent(
-                auto_confirm=True,
+                auto_confirm=self._auto_confirm,
                 fast_mode=self._fast_mode,
                 include_thoughts=self._include_thoughts,
                 max_observation_images=self._max_observation_images,
                 observation_scale=self._observation_scale,
             )
         await self.agent.initialize()
+
+    def has_pending_prompt(self, task_id: str) -> bool:
+        """Return whether the task is currently waiting on user confirmation."""
+        return task_id in self._pending_prompts
+
+    def build_pending_prompt_message(self, task_id: str) -> str:
+        """Build the structured A2A payload shown while confirmation is pending."""
+        prompt = self._pending_prompts[task_id]
+        return json.dumps(
+            {
+                "eventType": "approval_required",
+                "taskId": task_id,
+                "status": {"state": "input_required"},
+                "payload": {
+                    "agent_name": "browser_agent",
+                    "name": prompt.function_name,
+                    "args": {
+                        "safety_decision": {
+                            "decision": "require_confirmation",
+                            "explanation": prompt.explanation,
+                        }
+                    },
+                },
+                "isFinal": False,
+            }
+        )
+
+    def _parse_confirmation_reply(
+        self,
+        user_input: str,
+    ) -> SafetyPromptDecision | None:
+        """Parse a follow-up user reply into the two-bool safety decision."""
+        normalized = user_input.strip().lower()
+        if normalized in {"y", "yes", "allow", "approve", "continue"}:
+            return True, True
+        if normalized in {"n", "no", "deny", "reject", "cancel"}:
+            return False, False
+        return None
+
+    def resolve_pending_prompt(self, task_id: str, user_input: str) -> bool:
+        """Resolve the pending confirmation when the user reply is valid."""
+        prompt = self._pending_prompts.get(task_id)
+        if prompt is None:
+            return False
+
+        decision = self._parse_confirmation_reply(user_input)
+        if decision is None:
+            return False
+
+        if not prompt.future.done():
+            prompt.future.set_result(decision)
+        return True
+
+    def _build_safety_prompt_handler(
+        self,
+        updater: TaskUpdater,
+        task_id: str,
+        context_id: str,
+    ):
+        """Create an A2A-aware safety prompt callback for this task run."""
+
+        async def handler(
+            function_call: Any,
+            auto_confirm: bool,
+        ) -> SafetyPromptDecision:
+            safety_decision = function_call.args.get("safety_decision")
+            if not (
+                safety_decision
+                and safety_decision.get("decision") == "require_confirmation"
+            ):
+                return False, True
+
+            if auto_confirm:
+                return True, True
+
+            explanation = safety_decision.get("explanation", "No explanation provided.")
+            prompt = PendingSafetyPrompt(
+                future=asyncio.get_running_loop().create_future(),
+                function_name=function_call.name,
+                explanation=explanation,
+            )
+            self._pending_prompts[task_id] = prompt
+
+            await updater.update_status(
+                TaskState.input_required,
+                new_agent_text_message(
+                    self.build_pending_prompt_message(task_id),
+                    context_id,
+                    task_id,
+                ),
+            )
+
+            try:
+                return await prompt.future
+            finally:
+                if self._pending_prompts.get(task_id) is prompt:
+                    self._pending_prompts.pop(task_id, None)
+
+        return handler
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Handle one browser-agent A2A request.
@@ -120,7 +236,15 @@ class BrowserAgentExecutor(AgentExecutor):
                     task.id,
                 ),
             )
-            async for event in self.agent.run(query, max_steps=20):
+            async for event in self.agent.run(
+                query,
+                max_steps=20,
+                safety_prompt_handler=self._build_safety_prompt_handler(
+                    updater,
+                    task.id,
+                    task.context_id,
+                ),
+            ):
                 is_final = event.isFinal
                 json_str = event.model_dump_json()
 
@@ -153,6 +277,10 @@ class BrowserAgentExecutor(AgentExecutor):
         The current executor does not maintain per-task cancellation handles or a
         detached worker pool, so there is nothing additional to stop here.
         """
+        if context.task_id:
+            prompt = self._pending_prompts.pop(context.task_id, None)
+            if prompt is not None and not prompt.future.done():
+                prompt.future.cancel()
         del context, event_queue
         return
 
@@ -164,6 +292,7 @@ def start_a2a_server(
     include_thoughts: bool | None = None,
     max_observation_images: int | None = None,
     observation_scale: float | None = None,
+    auto_confirm: bool | None = None,
 ) -> None:
     """Configure and start the browser-agent A2A HTTP server.
 
@@ -177,6 +306,8 @@ def start_a2a_server(
         keep with image payloads in model history.
         ``BROWSER_OBSERVATION_SCALE``: Optional screenshot scale override for the
         browser agent. Falls back to ``OBSERVATION_SCALE`` or ``1.0``.
+        ``BROWSER_AUTO_CONFIRM``: Whether safety-gated browser actions should be
+        auto-approved. Falls back to ``AUTO_CONFIRM`` and defaults to ``false``.
 
     Args:
         host: Optional host override. When omitted, ``AGENT_HOST`` is used.
@@ -213,6 +344,11 @@ def start_a2a_server(
         observation_scale,
         "BROWSER_OBSERVATION_SCALE",
     )
+    resolved_auto_confirm = resolve_bool_config(
+        auto_confirm,
+        "BROWSER_AUTO_CONFIRM",
+        default=resolve_bool_config(None, "AUTO_CONFIRM", default=False),
+    )
     public_url = os.environ.get("BROWSER_AGENT_PUBLIC_URL", f"http://{host}:{port}/")
     capabilities = AgentCapabilities(streaming=True, push_notifications=True)
     skill = AgentSkill(
@@ -240,12 +376,13 @@ def start_a2a_server(
         skills=[skill],
     )
 
-    request_handler = DefaultRequestHandler(
+    request_handler = ConfirmationRequestHandler(
         agent_executor=BrowserAgentExecutor(
             fast_mode=resolved_fast_mode,
             include_thoughts=resolved_include_thoughts,
             max_observation_images=resolved_max_observation_images,
             observation_scale=resolved_observation_scale,
+            auto_confirm=resolved_auto_confirm,
         ),
         task_store=InMemoryTaskStore(),
     )
